@@ -5,6 +5,7 @@ import * as phantom from 'phantom';
 import * as fs from 'fs';
 import * as _ from 'lodash';
 import * as moment from 'moment';
+const cTable = require('console.table');
 
 import { ITournament, IPlayer } from './models';
 import { MongoData } from './data/mongo';
@@ -74,6 +75,8 @@ async function pullMissingPlayerStatsForAllPlayers() {
   console.log(`Read ${allPlayers.length} players from players.json.`)
   await Promise.all(allPlayers.map(pullMissingPlayerStats));
 }
+
+function 
 
 function readAllPlayers(): IPlayer[] {
   let players: IPlayer[] = [];
