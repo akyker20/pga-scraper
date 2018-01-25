@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as _ from 'lodash';
 import { 
   convertTableHTMLToPerformance, 
-  getStatsTableHtmlForPerformance,
+  getRawDataForPerformance,
   getTournamentsPlayedInByPlayer
 } from '..';
 
@@ -18,7 +18,7 @@ describe('Unit Tests', function() {
     _.each(tests, (testObj, index) => {
       it (`should get correct table for test ${index}`, async function() {
         let expectedHtml = testObj.html;
-        const actualHtml = await getStatsTableHtmlForPerformance(testObj.url, testObj.tourneyName);
+        const actualHtml = await getRawDataForPerformance(testObj.url, testObj.tourneyName);
         assert.deepEqual(actualHtml, expectedHtml);
       })
     })

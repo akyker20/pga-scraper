@@ -1,43 +1,202 @@
+// imports
+
 import * as cheerio from 'cheerio';
 import * as phantom from 'phantom';
+import * as fs from 'fs';
+import * as _ from 'lodash';
+import * as moment from 'moment';
+
+import { ITournament, IPlayer } from './models';
+import { MongoData } from './data/mongo';
+import { IPerformance } from './models';
+
+// constants
+
+const dbHost = process.env.MONGO_HOST || 'localhost';
+const dbPort = process.env.MONGO_PORT || '27017';
+const dbName = process.env.MONGO_DB_NAME || 'pga';
+
+const DataLayer = new MongoData(`mongodb://${dbHost}:${dbPort}/${dbName}`);
+
+const YearPattern = /(?:^|\b)(2017|2018|2019)(?=\b|$)/
+const MonthDayPattern = /^(\w+) (\d{2})/
 
 declare var $: any;
 
+// helpers
+
+/**
+ * Useful to delay phantom so that certain actions (changing dropdown value) can take effect
+ * and the desired data can be scraped.
+ * @param seconds 
+ */
 function delaySec(seconds: number) {
   return new Promise((res, rej) => setTimeout(res, seconds * 1000.0))
 }
 
-export async function getStatsForPlayer(playerUrl: string, playerName: string) {
+/**
+ * 
+ * @param dateRangeStr Two formats I have seen
+ * 1. JANUARY 4-7, 2018
+ * 2. NOVEMBER 28 - DECEMBER 1, 2018
+ */
+function parseStartDate(dateRangeStr: string): string {
+
+  // get year
+  const yearMatches = YearPattern.exec(dateRangeStr);
+  let year = null;
+  if (yearMatches !== null) {
+    year = yearMatches[1];
+  } else {
+    throw new Error(`Could not parse year from date range ${dateRangeStr}`)
+  }
+
+  // get month and day
+  const monthDayMatches = MonthDayPattern.exec(dateRangeStr);
+  let monthDay = null;
+  if (monthDayMatches !== null) {
+    monthDay = monthDayMatches[0];
+  } else {
+    throw new Error(`Could not parse month and day from date range ${dateRangeStr}`);
+  }
+
+  return moment(`${monthDay}, ${year}`, 'MMMM DD, YYYY').toISOString();
+
+}
+
+async function pullMissingPlayerStatsForAllPlayers() {
+  let allPlayers = readAllPlayers();
+  let errors = validatePlayers(allPlayers);
+  if (!_.isEmpty(errors)) {
+    console.log(`Errors:\n  ${errors.join('\n  ')}`)
+    return null;
+  }
+  console.log(`Read ${allPlayers.length} players from players.json.`)
+  await Promise.all(allPlayers.map(pullMissingPlayerStats));
+}
+
+function readAllPlayers(): IPlayer[] {
+  let players: IPlayer[] = [];
+  try {
+    players = <IPlayer[]>JSON.parse(fs.readFileSync('players.json', 'utf8'));
+  } catch (err) {
+    console.error(err);
+    throw new Error('Issue parsing players. The JSON is invalid');
+  }
+  return players;
+}
+
+function validatePlayers(players: IPlayer[]): string[] {
+  let errors: string[] = [];
+  if (!_.isArray(players)) {
+    errors.push('Players must be an array');
+  }
+  if (_.isEmpty(players)) {
+    errors.push('players.json cannot be an empty array')
+  }
+  _.each(players, player => {
+    if (!("scorecardUrl" in player) || !("name" in player)) {
+      errors.push(`Player JSON ${JSON.stringify(player)} is invalid... Each player should have 'scorecardUrl' and 'name'`)
+    }
+  })
+  return errors;
+}
+
+/**
+ * 1. Scrape all the tournaments the player has played in.
+ * 2. Check the database to see what tournaments we have already scraped data for for the player.
+ * 3a. If there are no new tournaments, tell the user this and finish.
+ * 3b. If there are new tournaments, for each new tournament, scrape the HTML table
+ * 4. For each tournament, convert the HTML to structured data with numerical values.
+ * 5. Write the new tournament data (performances) to the database.
+ * @param player 
+ */
+export async function pullMissingPlayerStats(player: IPlayer) {
+
+  const { scorecardUrl, name } = player;
+
+  // 1. Scrape all the tournaments the player has played in.
+  const tourneyNames = await getTournamentsPlayedInByPlayer(player);
+  if (tourneyNames === null) {
+    console.log(`No tournaments found for player ${name}`);
+    return null;
+  }
+
+  // 2. Check which performances already exist in database
+  const existingPlayerPerformances = await DataLayer.getPeformancesByPlayer(name);
+  const existingTourneyNames = _.map(existingPlayerPerformances, 'tourneyName');
+  console.log(`Tournaments we already have ${name}'s stats for:\n  ${existingTourneyNames.join('\n  ')}`)
+
+  const newTourneyNames = _.difference(tourneyNames, existingTourneyNames);
+  // 3a. If there are no new tournaments, tell the user this and finish.
+  if (_.isEmpty(newTourneyNames)) {
+    console.log(`No new tournament exist for player ${name}...`);
+    return null;
+  }
+  console.log(`Fetching new tournaments for ${name}:\n  ${newTourneyNames.join('\n  ')}\n`)
+
+  // 3b. If there are new tournaments, for each new tournament, scrape the HTML table
+  // 4. Process the html into structured data
+  const playerPerformancePromises = _.map(newTourneyNames, tourneyName => getPerformanceForPlayer(player, tourneyName))
+  const playerPerformances = await Promise.all(playerPerformancePromises);
+
+  const nonNullPlayerPerformances = <IPerformance[]>_.filter(playerPerformances, p => p !== null);
+
+  // 5. Write the new tournament data (performances) to the database.
+  await DataLayer.insertPerformances(nonNullPlayerPerformances);
+
+  console.log(`Successfully stored ${player.name} stats for ${_.map(nonNullPlayerPerformances, 'tourneyName').join(', ')}.`);
+
+}
+
+/**
+ * Sometimes there is no data for a player's tournament even though
+ * that tournament exists in the dropdown of tournaments the player played in.
+ * @param player 
+ * @param tourneyName 
+ */
+export async function getPerformanceForPlayer(player: IPlayer, tourneyName: string): Promise<IPerformance | null> {
   
-  const tourneyNames = await getTournamentsPlayedInByPlayer(playerUrl);
-  const promises = tourneyNames.map(tourneyName => {
-    return getStatsTableHtmlForPerformance(playerUrl, tourneyName)
-      .then(convertTableHTMLToPerformance)
-  });
+  const rawData = await getRawDataForPerformance(player, tourneyName);
 
-  const stats = await Promise.all(promises);
+  if (rawData === null) {
+    console.log(`No data exists for ${player.name}, ${tourneyName}.\nCheck ${player.scorecardUrl}`)
+    return null;
+  }
 
-  for(var i = 0; i < stats.length; i++) {
-    console.log('Player: ', playerName);
-    console.log('Tournament: ', tourneyNames[i]);
-    console.log('Stats:');
-    console.log(stats[i]);
-    console.log('\n\n');
+  const {
+    html,
+    dateRange
+  } = rawData;
+
+  let stats = getPerformanceStatsFromHtml(html);
+
+  let startDate = parseStartDate(dateRange);
+
+  return {
+    playerName: player.name,
+    startDate,
+    tourneyName,
+    stats
   }
 
 }
 
-export async function getTournamentsPlayedInByPlayer(playerUrl: string): Promise<string[]> {
+export async function getTournamentsPlayedInByPlayer(player: IPlayer): Promise<string[]> {
+  
+  console.log(`Fetching all tournaments ${player.name} played in...`)
   
   const instance = await phantom.create();
   const page = await instance.createPage();
   page.setting("loadImages", false);
-  const status = await page.open(playerUrl);
+  const status = await page.open(player.scorecardUrl);
 
-  console.log('opened page');
+  console.log(`Successfully opened ${player.name} scorecard webpage...`);
+
+  let names = null;
 
   try {
-    const names = await page.evaluate(function() {
+    names = await page.evaluate(function() {
       let tournamentNames = $('.tournament-select .hasCustomSelect option')
         .get()
         .slice(1) // option 1 is ----- PGA Tour ----- (not a tournament)
@@ -45,23 +204,25 @@ export async function getTournamentsPlayedInByPlayer(playerUrl: string): Promise
       return tournamentNames;
     });
   } catch (err) {
-    console.error('Error in getting tournament names', err);
+    console.error(`Error in getting tournament names for ${player.name}`, err);
   }
 
-  console.log('got tournament names');
+  console.log(`${player.name} has played in:\n  ${names.join('\n  ')}`);
 
   return names;
 
 }
 
-export async function getStatsTableHtmlForPerformance(playerUrl: string, tournamentName: string): Promise<string> {
+export async function getRawDataForPerformance(player: IPlayer, tournamentName: string): Promise<{ html: string, dateRange: string} | null> {
   
+  const tourneyPlayerStr = `${player.name}, ${tournamentName}`;
+
   const instance = await phantom.create();
   const page = await instance.createPage();
   page.setting("loadImages", false);
-  const status = await page.open(playerUrl);
+  const status = await page.open(player.scorecardUrl);
 
-  console.log('opened page');
+  console.log(`Fetching raw data for ${player.name}, ${tournamentName}`);
   
   try {
     await page.evaluate(function(tourneyName) {
@@ -69,37 +230,71 @@ export async function getStatsTableHtmlForPerformance(playerUrl: string, tournam
       let tourneyOptionVal =  tourneyOptionNode.attr('value');
       $('.tournament-select .hasCustomSelect').val(tourneyOptionVal).change()
     }, tournamentName);
+    console.log(`Set dropdown to ${tournamentName} success`)
   } catch (err) {
-    console.error(`Error setting tournament option ${playerUrl}, ${tournamentName}`);
+    console.error(`Error setting tournament option ${player.scorecardUrl}, ${tournamentName}`);
   }
-
-  console.log('changed value');
 
   await delaySec(2.0);
 
-  console.log('delayed two seconds');
+  console.log(`Delayed two seconds for ${tourneyPlayerStr} data to load...`);
 
   let statsTableHtml = null;
 
   try {
     statsTableHtml = await page.evaluate(function() {
+      if ($('.player-tournament-statistics-table')[0] === undefined) {
+        return null;
+      }
       return $('.player-tournament-statistics-table')[0].outerHTML;
     });
+    if (_.isEmpty(statsTableHtml)) {
+      console.log(`No stats table for ${tourneyPlayerStr}.`)
+      return null;
+    }
+    console.log(`Scraped html table for ${tourneyPlayerStr} successfully`)
   } catch (err) {
-    console.error(`Error getting stats table html ${playerUrl}, ${tournamentName}`, err);
+    console.error(`Error getting stats table html ${tourneyPlayerStr}`, err);
   }
 
-  console.log('fetched stats table html');
+  let dateRange = null;
+  try {
+    dateRange = await page.evaluate(function() {
+      return $('.date').text();
+    });
+    console.log(`Fetched date range for ${tourneyPlayerStr} successfully`);
+  } catch (err) {
+    console.error(`Error getting stats table html ${tourneyPlayerStr}`, err);
+  }
 
   instance.exit();
 
-  console.log('phantom exit');
-
-  return statsTableHtml;
+  return {
+    html: statsTableHtml,
+    dateRange 
+  };
 
 }
 
-export function convertTableHTMLToPerformance(html: string) {
+/**
+ * 1. Convert HTML table into structured data
+ * 2. Filter stats that aren't needed
+ * 3. Convert values of remaining stats to numbers.
+ * @param html raw html table that was scraped
+ */
+function getPerformanceStatsFromHtml(html: string) {
+  let structuredStats = getStructuredDataFromHTML(html);
+  let filteredStats = filterStats(structuredStats);
+  let numericStats = parseNumbers(filteredStats);
+  return numericStats;
+}
+
+/**
+ * Takes the scraped HTML table, and creates a stats object of
+ * string key-value pairs
+ * @param html 
+ */
+export function getStructuredDataFromHTML(html: string) {
   
   const $c = cheerio.load(html);
 
@@ -136,5 +331,40 @@ export function convertTableHTMLToPerformance(html: string) {
 
 }
 
+const statsToInclude = [
+  'SG: OFF THE TEE',
+  'SG: APPROACH TO THE GREEN',
+  'SG: AROUND THE GREEN',
+  'SG: PUTTING',
+  'SG: TEE TO GREEN',
+  'SG: TOTAL'
+];
 
-getStatsForPlayer("https://www.pgatour.com/players/player.34046.jordan-spieth.html/scorecards", "Jordan Spieth");
+/**
+ * After raw HTML is converted to structured data,
+ * this method is called and removes many of the unecessary statistics
+ * @param stats after data has been structured
+ */
+export function filterStats(stats: any) {
+  let filteredStats: any = {};
+  _.forOwn(stats, (value, key) => {
+    filteredStats[key] = _.pick(value, statsToInclude)
+  })
+  return filteredStats;
+}
+
+/**
+ * After HTML has been converted to structured data and uneccessary stats
+ * have been removed, this method converts the values to numbers before
+ * they are stored in database.
+ * @param stats
+ */
+export function parseNumbers(stats: any) {
+  let numericStats: any = {};
+  _.forOwn(stats, (value, key) => {
+    numericStats[key] = _.mapValues(stats[key], v => Number.parseFloat(v))
+  })
+  return numericStats;
+}
+
+pullMissingPlayerStatsForAllPlayers();
