@@ -18,7 +18,7 @@ export class MongoData implements IData {
 
   private getQueryObjForTimes(times?: ITimes) {
     
-    if (_.isUndefined(times)) return null;
+    if (_.isUndefined(times) || _.isEmpty(times)) return null;
 
     let query: any = null;
     if (!_.isEmpty(times.after)) {
@@ -27,7 +27,7 @@ export class MongoData implements IData {
       };
     }
     if (!_.isEmpty(times.before)) {
-      if (_.isNull(query.startDate)) query = {};
+      if (_.isNull(query)) query = {};
       query.$lte = times.before;
     }
     return query;
@@ -37,7 +37,7 @@ export class MongoData implements IData {
     let query: any = { playerName };
     let timesQueryObj = this.getQueryObjForTimes(times);
     if (timesQueryObj !== null) {
-      query.startData = timesQueryObj;
+      query.startDate = timesQueryObj;
     }
     return this.performances.find(query);
   }
@@ -46,7 +46,7 @@ export class MongoData implements IData {
     let query: any = {};
     let timesQueryObj = this.getQueryObjForTimes(times);
     if (timesQueryObj !== null) {
-      query.startData = timesQueryObj;
+      query.startDate = timesQueryObj;
     }
     return this.performances.find(query);
   }

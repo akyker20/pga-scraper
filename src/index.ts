@@ -5,11 +5,25 @@ import * as phantom from 'phantom';
 import * as fs from 'fs';
 import * as _ from 'lodash';
 import * as moment from 'moment';
-const cTable = require('console.table');
+const Table = require('cli-table');
+const colors = require('colors/safe');
 
 import { ITournament, IPlayer } from './models';
 import { MongoData } from './data/mongo';
 import { IPerformance } from './models';
+import { performance } from 'perf_hooks';
+import { ITimes } from './data/index';
+
+// map
+
+const StatStrMap: {[key: string]: string} = {
+  'SG: OFF THE TEE': 'SG:OTT',
+  'SG: APPROACH TO THE GREEN': 'SG:APPTG',
+  'SG: AROUND THE GREEN': 'SG:ATG',
+  'SG: PUTTING': 'SG:PUTT',
+  'SG: TEE TO GREEN': 'SG:TTG',
+  'SG: TOTAL': 'SG:TOTAL',
+}
 
 // constants
 
@@ -76,7 +90,38 @@ async function pullMissingPlayerStatsForAllPlayers() {
   await Promise.all(allPlayers.map(pullMissingPlayerStats));
 }
 
-function 
+function printPerformance(performance: IPerformance) {
+  console.log('\n');
+  console.log(colors.cyan.bold(performance.playerName));
+  console.log(performance.tourneyName);
+  let timeSince = moment(performance.startDate).fromNow();
+  let formattedTime = moment(performance.startDate).format('MM/DD/YY');
+  console.log(`${formattedTime} (${timeSince})`);
+
+  let topHeaders = _.keys(performance.stats);
+  let topHeaderLabels = _.map(topHeaders, header => colors.white.bold(header));
+  const table = new Table({ 
+    head: ["", ...topHeaderLabels]
+  });
+
+
+  let statHeaders = _.keys(performance.stats[topHeaders[0]]);
+  
+  let tableData: { [header: string]: string[] }[] = [];
+  // go through each stat
+  _.each(statHeaders, statHeader => {
+
+    let statLabel = colors.bold.white((statHeader in StatStrMap) ? StatStrMap[statHeader] : statHeader);
+
+    // for a stat, get all values (i.e. Round 1 val, Round 2 val, Round 3 val)
+    let rowValues = _.map(topHeaders, topHeader => performance.stats[topHeader][statHeader])
+    tableData.push({ [statLabel]: rowValues });
+  })
+
+  table.push(...tableData);
+  console.log(table.toString());
+  console.log('\n');
+}
 
 function readAllPlayers(): IPlayer[] {
   let players: IPlayer[] = [];
@@ -238,9 +283,9 @@ export async function getRawDataForPerformance(player: IPlayer, tournamentName: 
     console.error(`Error setting tournament option ${player.scorecardUrl}, ${tournamentName}`);
   }
 
-  await delaySec(2.0);
+  await delaySec(3.0);
 
-  console.log(`Delayed two seconds for ${tourneyPlayerStr} data to load...`);
+  console.log(`Delayed three seconds for ${tourneyPlayerStr} data to load...`);
 
   let statsTableHtml = null;
 
@@ -370,4 +415,84 @@ export function parseNumbers(stats: any) {
   return numericStats;
 }
 
-pullMissingPlayerStatsForAllPlayers();
+// handle command line inputs
+
+// print process.argv
+
+function printCommands() {
+  console.log(`${colors.cyan.bold('pull')}: Pulls new tournament stats for players in players.json`)
+  console.log(`${colors.cyan.bold('stats')}: Gets stats for a player or between a date.`)
+}
+
+if (process.argv.length < 3) {
+  console.log('\n');
+  console.log(colors.red.underline('You must enter one of the following commands:'));
+  printCommands();
+  console.log('\n');
+  process.exit(1);
+}
+
+let commandMap: { [cmd: string]: () => any } = {
+  pull: pullMissingPlayerStatsForAllPlayers,
+  stats: getStats
+}
+
+if (!(process.argv[2] in commandMap)) {
+  console.log('\n');
+  console.log(colors.red.underline(`${process.argv[2]} is not a valid command. Use one of the following:`))
+  printCommands();
+  console.log('\n');
+  process.exit(1);
+}
+
+function sortPerformancesByDate(performances: IPerformance[]) {
+  return _.orderBy(performances, 'startDate', 'desc');
+}
+
+async function getStats() {
+  let args = _.slice(process.argv, 3);
+
+  let times: ITimes = {};
+
+  let beforeArg = _.find(args, arg => _.startsWith(arg, '-before='));
+  if (!_.isUndefined(beforeArg)) {
+    times.before = moment(beforeArg.substring(8)).toISOString();
+  }
+  let afterArg = _.find(args, arg => _.startsWith(arg, '-after='));
+  if (!_.isUndefined(afterArg)) {
+    times.after = moment(afterArg.substring(7)).toISOString();
+  }
+
+  let playerArg  = _.find(args, arg => _.startsWith(arg, '-player='));
+  if (!_.isUndefined(playerArg)) {
+    let playerName = playerArg.substring(8);
+    const sortedPerformances = await DataLayer.getPeformancesByPlayer(playerName, times)
+      .then(sortPerformancesByDate);
+
+    if (_.isEmpty(sortedPerformances)) {
+      console.log(`No stats for player ${playerName}`);
+      process.exit(0);
+    }
+
+    _.each(sortedPerformances, printPerformance);
+    process.exit(0);
+
+  } else {
+    
+    const sortedPerformances = await DataLayer.getPerformancesBetween(times)
+      .then(sortPerformancesByDate);
+
+    if (_.isEmpty(sortedPerformances)) {
+      console.log('Could not find any matching stats. Check the dates');
+    }
+
+    _.each(sortedPerformances, printPerformance);
+    process.exit(0);
+
+  }
+  
+}
+
+commandMap[process.argv[2]]();
+
+// console.log(process.argv)
