@@ -13,6 +13,7 @@ import { MongoData } from './data/mongo';
 import { IPerformance } from './models';
 import { performance } from 'perf_hooks';
 import { ITimes } from './data/index';
+import { ICommands } from './data/index';
 
 // map
 
@@ -90,7 +91,7 @@ async function pullMissingPlayerStatsForAllPlayers() {
   await Promise.all(allPlayers.map(pullMissingPlayerStats));
 }
 
-function printPerformance(performance: IPerformance) {
+function printPerformance(performance: IPerformance, excludedStats: string[] = []) {
   console.log('\n');
   console.log(colors.cyan.bold(performance.playerName));
   console.log(performance.tourneyName);
@@ -104,8 +105,10 @@ function printPerformance(performance: IPerformance) {
     head: ["", ...topHeaderLabels]
   });
 
-
-  let statHeaders = _.keys(performance.stats[topHeaders[0]]);
+  let statHeaders = _.chain(performance.stats[topHeaders[0]])
+    .keys()
+    .filter(stat => !_.includes(excludedStats, StatStrMap[stat]))
+    .value();
   
   let tableData: { [header: string]: string[] }[] = [];
   // go through each stat
@@ -171,7 +174,7 @@ export async function pullMissingPlayerStats(player: IPlayer) {
   }
 
   // 2. Check which performances already exist in database
-  const existingPlayerPerformances = await DataLayer.getPeformancesByPlayer(name);
+  const existingPlayerPerformances = await DataLayer.getPerformances({ player: name });
   const existingTourneyNames = _.map(existingPlayerPerformances, 'tourneyName');
   console.log(`Tournaments we already have ${name}'s stats for:\n  ${existingTourneyNames.join('\n  ')}`)
 
@@ -194,6 +197,7 @@ export async function pullMissingPlayerStats(player: IPlayer) {
   await DataLayer.insertPerformances(nonNullPlayerPerformances);
 
   console.log(`Successfully stored ${player.name} stats for ${_.map(nonNullPlayerPerformances, 'tourneyName').join(', ')}.`);
+  process.exit(0);
 
 }
 
@@ -218,6 +222,9 @@ export async function getPerformanceForPlayer(player: IPlayer, tourneyName: stri
   } = rawData;
 
   let stats = getPerformanceStatsFromHtml(html);
+  if (stats === null) {
+    return null;
+  }
 
   let startDate = parseStartDate(dateRange);
 
@@ -332,6 +339,7 @@ export async function getRawDataForPerformance(player: IPlayer, tournamentName: 
  */
 function getPerformanceStatsFromHtml(html: string) {
   let structuredStats = getStructuredDataFromHTML(html);
+  if (structuredStats === null) return null;
   let filteredStats = filterStats(structuredStats);
   let numericStats = parseNumbers(filteredStats);
   return numericStats;
@@ -452,44 +460,62 @@ function sortPerformancesByDate(performances: IPerformance[]) {
 async function getStats() {
   let args = _.slice(process.argv, 3);
 
-  let times: ITimes = {};
+  let commandConfig: ICommands = {
+    sortOrder: 1,
+    exclude: []
+  };
 
   let beforeArg = _.find(args, arg => _.startsWith(arg, '-before='));
   if (!_.isUndefined(beforeArg)) {
-    times.before = moment(beforeArg.substring(8)).toISOString();
+    commandConfig.before = moment(beforeArg.substring(8)).toISOString();
   }
   let afterArg = _.find(args, arg => _.startsWith(arg, '-after='));
   if (!_.isUndefined(afterArg)) {
-    times.after = moment(afterArg.substring(7)).toISOString();
+    commandConfig.after = moment(afterArg.substring(7)).toISOString();
   }
-
-  let playerArg  = _.find(args, arg => _.startsWith(arg, '-player='));
+  let excludeArg = _.find(args, arg => _.startsWith(arg, '-exclude='));
+  if (!_.isUndefined(excludeArg)) {
+    let excluded = excludeArg.substring(9).split(',');
+    if (_.intersection(excluded, _.values(StatStrMap)).length !== excluded.length) {
+      console.log(`\n${colors.red.underline('Invalid exclude stats')}\n`);
+      console.log(`Stats should be comma seperated. Valid exclude stats:\n  ${_.values(StatStrMap).join('\n  ')}\n`)
+      process.exit(1);
+    }
+    commandConfig.exclude = excludeArg.substring(9).split(',');
+  }
+  let playerArg = _.find(args, arg => _.startsWith(arg, '-player='));
   if (!_.isUndefined(playerArg)) {
-    let playerName = playerArg.substring(8);
-    const sortedPerformances = await DataLayer.getPeformancesByPlayer(playerName, times)
-      .then(sortPerformancesByDate);
-
-    if (_.isEmpty(sortedPerformances)) {
-      console.log(`No stats for player ${playerName}`);
-      process.exit(0);
-    }
-
-    _.each(sortedPerformances, printPerformance);
-    process.exit(0);
-
-  } else {
-    
-    const sortedPerformances = await DataLayer.getPerformancesBetween(times)
-      .then(sortPerformancesByDate);
-
-    if (_.isEmpty(sortedPerformances)) {
-      console.log('Could not find any matching stats. Check the dates');
-    }
-
-    _.each(sortedPerformances, printPerformance);
-    process.exit(0);
-
+    commandConfig.player = playerArg.substring(8);
   }
+  let tourneyArg = _.find(args, arg => _.startsWith(arg, '-tournament='));
+  if (!_.isUndefined(tourneyArg)) {
+    commandConfig.tourney = tourneyArg.substring(12);
+  }
+  let limitArg = _.find(args, arg => _.startsWith(arg, '-limit='));
+  if (!_.isUndefined(limitArg)) {
+    commandConfig.limit = Number.parseInt(limitArg.substring(7));
+  }
+  let sortByArg = _.find(args, arg => _.startsWith(arg, '-sortBy='));
+  if (!_.isUndefined(sortByArg)) {
+    commandConfig.sortBy = sortByArg.substring(8);
+  }
+  let sortOrderArg = _.find(args, arg => _.startsWith(arg, '-sortOrder='));
+  if (!_.isUndefined(sortOrderArg)) {
+    let sortOrderVal = sortOrderArg.substring(11);
+    if (!_.includes(['1', '-1'], sortOrderVal)) {
+      console.log(`\n${colors.red.underline('Valid sortOrder options are 1 (asc) or -1 (desc)')}\n`)
+      process.exit(1);
+    }
+    commandConfig.sortOrder = <1|-1>Number.parseInt(sortOrderVal);
+  }
+
+  const performances = await DataLayer.getPerformances(commandConfig);
+  if (_.isEmpty(performances)) {
+    console.log(`\n${colors.red.underline('Could not find any stats. Check your command')}\n`)
+  }
+
+  _.each(performances, perf => printPerformance(perf, commandConfig.exclude));
+  process.exit(0);
   
 }
 

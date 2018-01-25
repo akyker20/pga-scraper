@@ -1,4 +1,4 @@
-import { IData, ITimes } from "./index";
+import { IData, ITimes, IQuery } from "./index";
 import * as monk from 'monk';
 import * as _ from 'lodash';
 import { IPerformance } from "../models";
@@ -33,22 +33,34 @@ export class MongoData implements IData {
     return query;
   }
 
-  getPeformancesByPlayer(playerName: string, times?: ITimes): Promise<IPerformance[]> {
-    let query: any = { playerName };
-    let timesQueryObj = this.getQueryObjForTimes(times);
-    if (timesQueryObj !== null) {
-      query.startDate = timesQueryObj;
-    }
-    return this.performances.find(query);
-  }
-
-  getPerformancesBetween(times: ITimes): Promise<IPerformance[]> {
+  getPerformances(queryConfig: IQuery): Promise<IPerformance[]> {
     let query: any = {};
-    let timesQueryObj = this.getQueryObjForTimes(times);
-    if (timesQueryObj !== null) {
-      query.startDate = timesQueryObj;
+    if (!_.isEmpty(queryConfig.after)) {
+      query.startDate = {
+        $gte: queryConfig.after
+      };
     }
-    return this.performances.find(query);
+    if (!_.isEmpty(queryConfig.before)) {
+      if (_.isUndefined(query.startDate)) query.startDate = {};
+      query.startDate.$lte = queryConfig.before;
+    }
+    if (!_.isEmpty(queryConfig.tourney)) {
+      query.tourneyName = queryConfig.tourney;
+    }
+    if (!_.isEmpty(queryConfig.player)) {
+      query.playerName = queryConfig.player;
+    }
+
+    let options: any = {};
+    if (!_.isUndefined(queryConfig.limit)) {
+      options.limit = queryConfig.limit;
+    }
+
+    if (!_.isUndefined(queryConfig.sortBy)) {
+      options.sort = {[queryConfig.sortBy]: queryConfig.sortOrder || 1 };
+    }
+
+    return this.performances.find(query, options);
   }
 
   getAllPerformances(): Promise<IPerformance[]> {

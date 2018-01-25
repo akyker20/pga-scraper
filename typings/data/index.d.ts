@@ -8,14 +8,15 @@ export interface IQuery extends ITimes {
     before?: string;
     after?: string;
     tourney?: string;
+    limit?: number;
+    sortOrder: -1 | 1;
+    sortBy?: string;
 }
 export interface ICommands extends IQuery {
     exclude: string[];
-    sortBy: string;
 }
 export interface IData {
     insertPerformances(performances: IPerformance[]): Promise<IPerformance[]>;
-    getPeformancesByPlayer(playerName: string, times: ITimes): Promise<IPerformance[]>;
-    getPerformancesBetween(times: ITimes): Promise<IPerformance[]>;
+    getPerformances(query: IQuery): Promise<IPerformance[]>;
     getAllPerformances(): Promise<IPerformance[]>;
 }
