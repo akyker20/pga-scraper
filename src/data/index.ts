@@ -11,7 +11,7 @@ export interface IQuery extends ITimes {
   after?: string;
   tourney?: string;
   limit?: number;
-  sortOrder: -1|1;
+  sortOrder?: -1|1;
   sortBy?: string;
 }
 

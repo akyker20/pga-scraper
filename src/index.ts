@@ -89,6 +89,8 @@ async function pullMissingPlayerStatsForAllPlayers() {
   }
   console.log(`Read ${allPlayers.length} players from players.json.`)
   await Promise.all(allPlayers.map(pullMissingPlayerStats));
+  console.log('FINISHED');
+  process.exit(0);
 }
 
 function printPerformance(performance: IPerformance, excludedStats: string[] = []) {
@@ -197,7 +199,6 @@ export async function pullMissingPlayerStats(player: IPlayer) {
   await DataLayer.insertPerformances(nonNullPlayerPerformances);
 
   console.log(`Successfully stored ${player.name} stats for ${_.map(nonNullPlayerPerformances, 'tourneyName').join(', ')}.`);
-  process.exit(0);
 
 }
 
@@ -520,5 +521,3 @@ async function getStats() {
 }
 
 commandMap[process.argv[2]]();
-
-// console.log(process.argv)

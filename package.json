@@ -7,7 +7,9 @@
   "scripts": {
     "build": "./node_modules/.bin/tsc -p ./src/tsconfig.json",
     "watch": "./node_modules/.bin/tsc -p ./src/tsconfig.json -w",
-    "test": "./node_modules/.bin/mocha ./js/**/*.test.js"
+    "test": "./node_modules/.bin/mocha ./js/**/*.test.js",
+    "pull": "node js/index.js pull",
+    "stats": "node js/index.js stats --"
   },
   "author": "",
   "license": "ISC",

@@ -10,5 +10,13 @@
   {
     "scorecardUrl": "https://www.pgatour.com/players/player.30925.dustin-johnson.html/scorecards",
     "name": "Dustin Johnson"
+  },
+  {
+    "scorecardUrl": "https://www.pgatour.com/players/player.01810.phil-mickelson.html/scorecards",
+    "name": "Phil Mickleson"
+  },
+  {
+    "scorecardUrl": "https://www.pgatour.com/players/player.31323.gary-woodland.html/scorecards",
+    "name": "Gary Woodland"
   }
 ]
