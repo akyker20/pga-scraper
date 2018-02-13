@@ -1,3 +1,8 @@
+// Some Issues encountered:
+// Must set userAgent
+// userAgent value matters. Didn't work for windows, working for mac.
+
+
 // imports
 
 import * as cheerio from 'cheerio';
@@ -17,7 +22,7 @@ import { ICommands } from './data/index';
 
 // map
 
-const StatStrMap: {[key: string]: string} = {
+const StatStrMap: { [key: string]: string } = {
   'SG: OFF THE TEE': 'SG:OTT',
   'SG: APPROACH TO THE GREEN': 'SG:APPTG',
   'SG: AROUND THE GREEN': 'SG:ATG',
@@ -88,7 +93,9 @@ async function pullMissingPlayerStatsForAllPlayers() {
     return null;
   }
   console.log(`Read ${allPlayers.length} players from players.json.`)
-  await Promise.all(allPlayers.map(pullMissingPlayerStats));
+  for (const player of allPlayers) {
+    await pullMissingPlayerStats(player);
+  }
   console.log('FINISHED');
   process.exit(0);
 }
@@ -103,7 +110,7 @@ function printPerformance(performance: IPerformance, excludedStats: string[] = [
 
   let topHeaders = _.keys(performance.stats);
   let topHeaderLabels = _.map(topHeaders, header => colors.white.bold(header));
-  const table = new Table({ 
+  const table = new Table({
     head: ["", ...topHeaderLabels]
   });
 
@@ -111,7 +118,7 @@ function printPerformance(performance: IPerformance, excludedStats: string[] = [
     .keys()
     .filter(stat => !_.includes(excludedStats, StatStrMap[stat]))
     .value();
-  
+
   let tableData: { [header: string]: string[] }[] = [];
   // go through each stat
   _.each(statHeaders, statHeader => {
@@ -209,7 +216,7 @@ export async function pullMissingPlayerStats(player: IPlayer) {
  * @param tourneyName 
  */
 export async function getPerformanceForPlayer(player: IPlayer, tourneyName: string): Promise<IPerformance | null> {
-  
+
   const rawData = await getRawDataForPerformance(player, tourneyName);
 
   if (rawData === null) {
@@ -239,20 +246,25 @@ export async function getPerformanceForPlayer(player: IPlayer, tourneyName: stri
 }
 
 export async function getTournamentsPlayedInByPlayer(player: IPlayer): Promise<string[]> {
-  
+
   console.log(`Fetching all tournaments ${player.name} played in...`)
-  
+
   const instance = await phantom.create();
   const page = await instance.createPage();
-  page.setting("loadImages", false);
+  await page.setting("loadImages", false);
+  await page.setting("userAgent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.3");
   const status = await page.open(player.scorecardUrl);
 
+  await page.includeJs('https://code.jquery.com/jquery-3.1.1.min.js');
+
   console.log(`Successfully opened ${player.name} scorecard webpage...`);
+
+  await delaySec(5.0);
 
   let names = null;
 
   try {
-    names = await page.evaluate(function() {
+    names = await page.evaluate(function () {
       let tournamentNames = $('.tournament-select .hasCustomSelect option')
         .get()
         .slice(1) // option 1 is ----- PGA Tour ----- (not a tournament)
@@ -263,27 +275,34 @@ export async function getTournamentsPlayedInByPlayer(player: IPlayer): Promise<s
     console.error(`Error in getting tournament names for ${player.name}`, err);
   }
 
+  console.log(names);
+
   console.log(`${player.name} has played in:\n  ${names.join('\n  ')}`);
+
+  instance.exit();
 
   return names;
 
 }
 
-export async function getRawDataForPerformance(player: IPlayer, tournamentName: string): Promise<{ html: string, dateRange: string} | null> {
-  
+export async function getRawDataForPerformance(player: IPlayer, tournamentName: string): Promise<{ html: string, dateRange: string } | null> {
+
   const tourneyPlayerStr = `${player.name}, ${tournamentName}`;
 
   const instance = await phantom.create();
   const page = await instance.createPage();
-  page.setting("loadImages", false);
+  await page.setting("loadImages", false);
+  await page.setting("userAgent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.3");
   const status = await page.open(player.scorecardUrl);
 
+  await page.includeJs('https://code.jquery.com/jquery-3.1.1.min.js');
+
   console.log(`Fetching raw data for ${player.name}, ${tournamentName}`);
-  
+
   try {
-    await page.evaluate(function(tourneyName) {
+    await page.evaluate(function (tourneyName) {
       let tourneyOptionNode = $(`.tournament-select .hasCustomSelect option:contains(\'${tourneyName}\')`);
-      let tourneyOptionVal =  tourneyOptionNode.attr('value');
+      let tourneyOptionVal = tourneyOptionNode.attr('value');
       $('.tournament-select .hasCustomSelect').val(tourneyOptionVal).change()
     }, tournamentName);
     console.log(`Set dropdown to ${tournamentName} success`)
@@ -298,7 +317,7 @@ export async function getRawDataForPerformance(player: IPlayer, tournamentName: 
   let statsTableHtml = null;
 
   try {
-    statsTableHtml = await page.evaluate(function() {
+    statsTableHtml = await page.evaluate(function () {
       if ($('.player-tournament-statistics-table')[0] === undefined) {
         return null;
       }
@@ -315,7 +334,7 @@ export async function getRawDataForPerformance(player: IPlayer, tournamentName: 
 
   let dateRange = null;
   try {
-    dateRange = await page.evaluate(function() {
+    dateRange = await page.evaluate(function () {
       return $('.date').text();
     });
     console.log(`Fetched date range for ${tourneyPlayerStr} successfully`);
@@ -327,7 +346,7 @@ export async function getRawDataForPerformance(player: IPlayer, tournamentName: 
 
   return {
     html: statsTableHtml,
-    dateRange 
+    dateRange
   };
 
 }
@@ -352,14 +371,14 @@ function getPerformanceStatsFromHtml(html: string) {
  * @param html 
  */
 export function getStructuredDataFromHTML(html: string) {
-  
+
   const $c = cheerio.load(html);
 
   let headings: string[] = [];
   $c('.holder thead tr th').each((index, el) => {
     headings.push(($c(el).text()));
   });
-  
+
   let titles: string[] = [];
   $c('.titles .table tbody tr td').each((index, el) => {
     titles.push($c(el).text());
@@ -367,12 +386,12 @@ export function getStructuredDataFromHTML(html: string) {
 
   let obj: any = {};
 
-  for(var i = 0; i < headings.length; i++) {
+  for (var i = 0; i < headings.length; i++) {
     obj[headings[i]] = {};
   }
 
   $c('.holder table tbody tr').each((rowIndex, row) => {
-    
+
     $c(row).find('td').each((colIndex, el) => {
 
       let heading = headings[colIndex];
@@ -507,7 +526,7 @@ async function getStats() {
       console.log(`\n${colors.red.underline('Valid sortOrder options are 1 (asc) or -1 (desc)')}\n`)
       process.exit(1);
     }
-    commandConfig.sortOrder = <1|-1>Number.parseInt(sortOrderVal);
+    commandConfig.sortOrder = <1 | -1>Number.parseInt(sortOrderVal);
   }
 
   const performances = await DataLayer.getPerformances(commandConfig);
@@ -517,7 +536,7 @@ async function getStats() {
 
   _.each(performances, perf => printPerformance(perf, commandConfig.exclude));
   process.exit(0);
-  
+
 }
 
 commandMap[process.argv[2]]();
